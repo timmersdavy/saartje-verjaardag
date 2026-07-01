@@ -790,7 +790,8 @@
       .select('*')
       .order('created_at', { ascending: false });
     if (error) { console.error(error); return []; }
-    return data.map(row => ({
+    // rijen met type 'fout' zijn stille foutmeldingen voor het logboek, geen boodschappen
+    return data.filter(row => row.type !== 'fout').map(row => ({
       id: row.id, type: row.type, name: row.name, msg: row.msg, src: row.media_url
     }));
   }
@@ -857,6 +858,16 @@
     if (!sb) return;
     const { error } = await sb.from('boodschappen').delete().eq('id', id);
     if (error) console.error(error);
+  }
+
+  // schrijft mislukte uploads stil naar het logboek, zodat problemen zichtbaar
+  // worden zonder dat een bezoeker ze hoeft te melden
+  async function meldFout(waar, err) {
+    try {
+      if (!sb) return;
+      const info = `${waar}: ${(err && err.message) || err} — ${navigator.userAgent}`.slice(0, 500);
+      await sb.from('boodschappen').insert({ type: 'fout', name: 'automatische foutmelding', msg: info, media_url: null });
+    } catch (_) { /* loggen mag zelf nooit een fout veroorzaken */ }
   }
 
   /* ══════════════════════════════════════════
@@ -1026,6 +1037,7 @@
       await renderGrid();
       closeModal();
     } catch (err) {
+      meldFout('foto-upload', err);
       alert('Uploaden mislukt: ' + (err && err.message ? err.message : err) + '\nProbeer opnieuw.');
       console.error(err);
     } finally {
@@ -1085,6 +1097,7 @@
       await renderGrid();
       closeModal();
     } catch (err) {
+      meldFout('video-upload', err);
       alert('Uploaden mislukt: ' + (err && err.message ? err.message : err) + '\nProbeer opnieuw.');
       console.error(err);
     } finally {
@@ -1107,7 +1120,8 @@
       await renderGrid();
       closeModal();
     } catch (err) {
-      alert('Versturen mislukt, probeer opnieuw.');
+      meldFout('tekst-versturen', err);
+      alert('Versturen mislukt: ' + (err && err.message ? err.message : err) + '\nProbeer opnieuw.');
       console.error(err);
     } finally {
       btn.disabled = false; btn.textContent = 'Toevoegen ✓';
