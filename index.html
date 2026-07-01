@@ -721,7 +721,12 @@
   ══════════════════════════════════════════ */
   const SUPABASE_URL = 'https://vbbjatmuuaqtpyurrkgj.supabase.co';
   const SUPABASE_KEY = 'sb_publishable_lg6mcBdFn5D_sgSAXxrafA_HRwHbCq9';
-  const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+  let sb = null;
+  try {
+    sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+  } catch (err) {
+    console.error('Supabase kon niet initialiseren:', err);
+  }
 
   /* ══════════════════════════════════════════
      COUNTDOWN
@@ -779,6 +784,7 @@
      STORAGE  –  boodschappen in Supabase (gedeeld voor iedereen)
   ══════════════════════════════════════════ */
   async function loadData() {
+    if (!sb) return [];
     const { data, error } = await sb
       .from('boodschappen')
       .select('*')
@@ -799,6 +805,7 @@
   }
 
   async function addEntry({ type, name, msg, file }) {
+    if (!sb) throw new Error('Geen verbinding met de database.');
     let media_url = null;
     if (file) media_url = await uploadMedia(file);
     const { error } = await sb.from('boodschappen').insert({ type, name, msg: msg || null, media_url });
@@ -806,6 +813,7 @@
   }
 
   async function deleteEntry(id) {
+    if (!sb) return;
     const { error } = await sb.from('boodschappen').delete().eq('id', id);
     if (error) console.error(error);
   }
@@ -879,9 +887,15 @@
   renderGrid();
 
   // live updates: als iemand anders iets toevoegt/verwijdert, ververst iedereen automatisch
-  sb.channel('boodschappen-live')
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'boodschappen' }, () => renderGrid())
-    .subscribe();
+  if (sb) {
+    try {
+      sb.channel('boodschappen-live')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'boodschappen' }, () => renderGrid())
+        .subscribe();
+    } catch (err) {
+      console.error('Live-updates konden niet gestart worden:', err);
+    }
+  }
 
   /* ══════════════════════════════════════════
      MODAL – open / close
