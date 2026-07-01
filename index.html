@@ -795,13 +795,54 @@
     }));
   }
 
+  // crypto.randomUUID bestaat niet op oudere iPhones (iOS < 15.4)
+  function uid() {
+    return (window.crypto && crypto.randomUUID)
+      ? crypto.randomUUID()
+      : Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
+  }
+
   async function uploadMedia(file) {
-    const ext      = file.name.split('.').pop();
-    const path     = `${crypto.randomUUID()}.${ext}`;
-    const { error } = await sb.storage.from('media').upload(path, file);
+    const parts = (file.name || '').split('.');
+    const ext   = parts.length > 1 ? parts.pop().toLowerCase()
+                : (file.type && file.type.split('/')[1]) || 'bin';
+    const path  = `${uid()}.${ext}`;
+    const { error } = await sb.storage.from('media').upload(path, file, {
+      contentType: file.type || undefined
+    });
     if (error) throw error;
     const { data } = sb.storage.from('media').getPublicUrl(path);
     return data.publicUrl;
+  }
+
+  // iPhone-foto's zijn vaak HEIC — andere toestellen kunnen die niet tonen.
+  // Het toestel dat uploadt kan ze wél decoderen, dus zetten we ze daar om naar JPEG.
+  async function ensureJpeg(file) {
+    const okTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+    if (okTypes.includes(file.type)) return file;
+    let url;
+    try {
+      url = URL.createObjectURL(file);
+      const img = await new Promise((res, rej) => {
+        const i = new Image();
+        i.onload = () => res(i);
+        i.onerror = rej;
+        i.src = url;
+      });
+      const maxSide = 2000;
+      const scale = Math.min(1, maxSide / Math.max(img.naturalWidth, img.naturalHeight));
+      const canvas = document.createElement('canvas');
+      canvas.width  = Math.round(img.naturalWidth * scale);
+      canvas.height = Math.round(img.naturalHeight * scale);
+      canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+      const blob = await new Promise(res => canvas.toBlob(res, 'image/jpeg', 0.9));
+      if (blob) return new File([blob], 'foto.jpg', { type: 'image/jpeg' });
+    } catch (err) {
+      console.warn('Kon foto niet omzetten naar JPEG, origineel wordt gebruikt:', err);
+    } finally {
+      if (url) URL.revokeObjectURL(url);
+    }
+    return file;
   }
 
   async function addEntry({ type, name, msg, file }) {
@@ -949,17 +990,17 @@
   const fotoPreview = document.getElementById('foto-preview');
 
   function handleFile(file) {
-    if (!file || !file.type.startsWith('image/')) return;
+    if (!file) return;
+    // sommige iPhones geven geen bestandstype mee — dan laten we het bestand gewoon door
+    if (file.type && !file.type.startsWith('image/')) {
+      alert('Dit lijkt geen foto te zijn. Kies een foto uit je galerij.');
+      return;
+    }
     selectedPhotoFile = file;
-    const reader = new FileReader();
-    reader.onload = e => {
-      selectedPhotoBase64 = e.target.result;
-      fotoPreview.src           = selectedPhotoBase64;
-      fotoPreview.style.display = 'block';
-      document.querySelector('.drop-zone-text').style.display = 'none';
-      document.querySelector('.drop-zone-icon').style.display = 'none';
-    };
-    reader.readAsDataURL(file);
+    fotoPreview.src           = URL.createObjectURL(file);
+    fotoPreview.style.display = 'block';
+    document.querySelector('.drop-zone-text').style.display = 'none';
+    document.querySelector('.drop-zone-icon').style.display = 'none';
   }
 
   fileInput.addEventListener('change', e => handleFile(e.target.files[0]));
@@ -979,12 +1020,13 @@
     const btn = e.currentTarget;
     btn.disabled = true; btn.textContent = 'Bezig met uploaden…';
     try {
-      await addEntry({ type: 'foto', name, msg, file: selectedPhotoFile });
+      const uploadFile = await ensureJpeg(selectedPhotoFile);
+      await addEntry({ type: 'foto', name, msg, file: uploadFile });
       selectedPhotoFile = null;
       await renderGrid();
       closeModal();
     } catch (err) {
-      alert('Uploaden mislukt, probeer opnieuw.');
+      alert('Uploaden mislukt: ' + (err && err.message ? err.message : err) + '\nProbeer opnieuw.');
       console.error(err);
     } finally {
       btn.disabled = false; btn.textContent = 'Toevoegen ✓';
@@ -1000,18 +1042,26 @@
   const videoDropZone   = document.getElementById('video-drop-zone');
   const videoPreview    = document.getElementById('video-preview');
 
+  const MAX_VIDEO_MB = 50; // limiet van de Supabase-opslag
+
   function handleVideoFile(file) {
-    if (!file || !file.type.startsWith('video/')) return;
+    if (!file) return;
+    // sommige iPhones geven geen bestandstype mee — dan laten we het bestand gewoon door
+    if (file.type && !file.type.startsWith('video/')) {
+      alert('Dit lijkt geen video te zijn. Kies een video uit je galerij.');
+      return;
+    }
+    if (file.size > MAX_VIDEO_MB * 1024 * 1024) {
+      alert(`Deze video is te groot (${Math.round(file.size / 1024 / 1024)} MB, max ${MAX_VIDEO_MB} MB). Kies een kortere video of film in een lagere kwaliteit.`);
+      return;
+    }
     selectedVideoFile = file;
-    const reader = new FileReader();
-    reader.onload = e => {
-      selectedVideoBase64          = e.target.result;
-      videoPreview.src             = selectedVideoBase64;
-      videoPreview.style.display   = 'block';
-      document.getElementById('video-dz-text').style.display = 'none';
-      document.getElementById('video-dz-icon').style.display = 'none';
-    };
-    reader.readAsDataURL(file);
+    // object-URL i.p.v. FileReader: het hele bestand inlezen deed de pagina
+    // crashen bij grote iPhone-video's
+    videoPreview.src             = URL.createObjectURL(file);
+    videoPreview.style.display   = 'block';
+    document.getElementById('video-dz-text').style.display = 'none';
+    document.getElementById('video-dz-icon').style.display = 'none';
   }
 
   videoFileInput.addEventListener('change', e => handleVideoFile(e.target.files[0]));
@@ -1035,7 +1085,7 @@
       await renderGrid();
       closeModal();
     } catch (err) {
-      alert('Uploaden mislukt, probeer opnieuw.');
+      alert('Uploaden mislukt: ' + (err && err.message ? err.message : err) + '\nProbeer opnieuw.');
       console.error(err);
     } finally {
       btn.disabled = false; btn.textContent = 'Toevoegen ✓';
