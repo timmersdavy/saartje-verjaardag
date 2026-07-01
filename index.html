@@ -714,7 +714,15 @@
     </div>
   </div>
 
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
   <script>
+  /* ══════════════════════════════════════════
+     SUPABASE
+  ══════════════════════════════════════════ */
+  const SUPABASE_URL = 'https://vbbjatmuuaqtpyurrkgj.supabase.co';
+  const SUPABASE_KEY = 'sb_publishable_lg6mcBdFn5D_sgSAXxrafA_HRwHbCq9';
+  const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
   /* ══════════════════════════════════════════
      COUNTDOWN
   ══════════════════════════════════════════ */
@@ -768,24 +776,46 @@
   setInterval(tick, 1000);
 
   /* ══════════════════════════════════════════
-     STORAGE  –  boodschappen in localStorage
+     STORAGE  –  boodschappen in Supabase (gedeeld voor iedereen)
   ══════════════════════════════════════════ */
-  const STORAGE_KEY = 'saartje_boodschappen_v1';
-
-  function loadData() {
-    try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || []; }
-    catch { return []; }
+  async function loadData() {
+    const { data, error } = await sb
+      .from('boodschappen')
+      .select('*')
+      .order('created_at', { ascending: false });
+    if (error) { console.error(error); return []; }
+    return data.map(row => ({
+      id: row.id, type: row.type, name: row.name, msg: row.msg, src: row.media_url
+    }));
   }
-  function saveData(data) {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+
+  async function uploadMedia(file) {
+    const ext      = file.name.split('.').pop();
+    const path     = `${crypto.randomUUID()}.${ext}`;
+    const { error } = await sb.storage.from('media').upload(path, file);
+    if (error) throw error;
+    const { data } = sb.storage.from('media').getPublicUrl(path);
+    return data.publicUrl;
+  }
+
+  async function addEntry({ type, name, msg, file }) {
+    let media_url = null;
+    if (file) media_url = await uploadMedia(file);
+    const { error } = await sb.from('boodschappen').insert({ type, name, msg: msg || null, media_url });
+    if (error) throw error;
+  }
+
+  async function deleteEntry(id) {
+    const { error } = await sb.from('boodschappen').delete().eq('id', id);
+    if (error) console.error(error);
   }
 
   /* ══════════════════════════════════════════
      RENDER GRID
   ══════════════════════════════════════════ */
-  function renderGrid() {
+  async function renderGrid() {
     const grid = document.getElementById('media-grid');
-    const data = loadData();
+    const data = await loadData();
     grid.innerHTML = '';
 
     if (data.length === 0) {
@@ -798,7 +828,7 @@
       return;
     }
 
-    data.forEach((item, i) => {
+    data.forEach(item => {
       const card = document.createElement('div');
       card.className = 'media-card';
 
@@ -824,19 +854,17 @@
           <div class="card-name">${escHtml(item.name)}</div>
           ${item.msg ? `<div class="card-msg">${escHtml(item.msg)}</div>` : ''}
         </div>
-        <button class="card-delete" data-index="${i}" title="Verwijderen">✕</button>`;
+        <button class="card-delete" data-id="${item.id}" title="Verwijderen">✕</button>`;
 
       grid.appendChild(card);
     });
 
     // delete handlers
     grid.querySelectorAll('.card-delete').forEach(btn => {
-      btn.addEventListener('click', e => {
+      btn.addEventListener('click', async e => {
         e.stopPropagation();
         if (confirm('Boodschap verwijderen?')) {
-          const data2 = loadData();
-          data2.splice(+btn.dataset.index, 1);
-          saveData(data2);
+          await deleteEntry(btn.dataset.id);
           renderGrid();
         }
       });
@@ -849,6 +877,11 @@
   }
 
   renderGrid();
+
+  // live updates: als iemand anders iets toevoegt/verwijdert, ververst iedereen automatisch
+  sb.channel('boodschappen-live')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'boodschappen' }, () => renderGrid())
+    .subscribe();
 
   /* ══════════════════════════════════════════
      MODAL – open / close
@@ -868,12 +901,14 @@
       .forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
     // reset foto
     selectedPhotoBase64 = null;
+    selectedPhotoFile   = null;
     const fotoPrev = document.getElementById('foto-preview');
     fotoPrev.style.display = 'none'; fotoPrev.src = '';
     document.querySelector('.drop-zone-text').style.display = '';
     document.querySelector('.drop-zone-icon').style.display = '';
     // reset video
     selectedVideoBase64 = null;
+    selectedVideoFile   = null;
     const vidPrev = document.getElementById('video-preview');
     vidPrev.style.display = 'none'; vidPrev.src = '';
     document.getElementById('video-dz-text').style.display = '';
@@ -894,12 +929,14 @@
      FOTO TAB
   ══════════════════════════════════════════ */
   let selectedPhotoBase64 = null;
+  let selectedPhotoFile   = null;
   const fileInput  = document.getElementById('foto-file');
   const dropZone   = document.getElementById('drop-zone');
   const fotoPreview = document.getElementById('foto-preview');
 
   function handleFile(file) {
     if (!file || !file.type.startsWith('image/')) return;
+    selectedPhotoFile = file;
     const reader = new FileReader();
     reader.onload = e => {
       selectedPhotoBase64 = e.target.result;
@@ -920,28 +957,38 @@
     handleFile(e.dataTransfer.files[0]);
   });
 
-  document.getElementById('foto-submit').addEventListener('click', () => {
+  document.getElementById('foto-submit').addEventListener('click', async e => {
     const name = document.getElementById('foto-name').value.trim();
     const msg  = document.getElementById('foto-msg').value.trim();
-    if (!name)               { alert('Vul jouw naam in.'); return; }
-    if (!selectedPhotoBase64) { alert('Kies eerst een foto.'); return; }
-    const data = loadData();
-    data.push({ type: 'foto', name, src: selectedPhotoBase64, msg });
-    saveData(data);
-    renderGrid();
-    closeModal();
+    if (!name)            { alert('Vul jouw naam in.'); return; }
+    if (!selectedPhotoFile) { alert('Kies eerst een foto.'); return; }
+    const btn = e.currentTarget;
+    btn.disabled = true; btn.textContent = 'Bezig met uploaden…';
+    try {
+      await addEntry({ type: 'foto', name, msg, file: selectedPhotoFile });
+      selectedPhotoFile = null;
+      await renderGrid();
+      closeModal();
+    } catch (err) {
+      alert('Uploaden mislukt, probeer opnieuw.');
+      console.error(err);
+    } finally {
+      btn.disabled = false; btn.textContent = 'Toevoegen ✓';
+    }
   });
 
   /* ══════════════════════════════════════════
      VIDEO TAB
   ══════════════════════════════════════════ */
   let selectedVideoBase64 = null;
+  let selectedVideoFile   = null;
   const videoFileInput  = document.getElementById('video-file');
   const videoDropZone   = document.getElementById('video-drop-zone');
   const videoPreview    = document.getElementById('video-preview');
 
   function handleVideoFile(file) {
     if (!file || !file.type.startsWith('video/')) return;
+    selectedVideoFile = file;
     const reader = new FileReader();
     reader.onload = e => {
       selectedVideoBase64          = e.target.result;
@@ -961,31 +1008,46 @@
     handleVideoFile(e.dataTransfer.files[0]);
   });
 
-  document.getElementById('video-submit').addEventListener('click', () => {
+  document.getElementById('video-submit').addEventListener('click', async e => {
     const name = document.getElementById('video-name').value.trim();
     const msg  = document.getElementById('video-msg').value.trim();
-    if (!name)               { alert('Vul jouw naam in.'); return; }
-    if (!selectedVideoBase64) { alert('Kies eerst een video.'); return; }
-    const data = loadData();
-    data.push({ type: 'video', name, src: selectedVideoBase64, msg });
-    saveData(data);
-    renderGrid();
-    closeModal();
+    if (!name)            { alert('Vul jouw naam in.'); return; }
+    if (!selectedVideoFile) { alert('Kies eerst een video.'); return; }
+    const btn = e.currentTarget;
+    btn.disabled = true; btn.textContent = 'Bezig met uploaden…';
+    try {
+      await addEntry({ type: 'video', name, msg, file: selectedVideoFile });
+      selectedVideoFile = null;
+      await renderGrid();
+      closeModal();
+    } catch (err) {
+      alert('Uploaden mislukt, probeer opnieuw.');
+      console.error(err);
+    } finally {
+      btn.disabled = false; btn.textContent = 'Toevoegen ✓';
+    }
   });
 
   /* ══════════════════════════════════════════
      TEKST TAB
   ══════════════════════════════════════════ */
-  document.getElementById('tekst-submit').addEventListener('click', () => {
+  document.getElementById('tekst-submit').addEventListener('click', async e => {
     const name = document.getElementById('tekst-name').value.trim();
     const msg  = document.getElementById('tekst-msg').value.trim();
     if (!name) { alert('Vul jouw naam in.'); return; }
     if (!msg)  { alert('Schrijf een boodschap.'); return; }
-    const data = loadData();
-    data.push({ type: 'tekst', name, msg });
-    saveData(data);
-    renderGrid();
-    closeModal();
+    const btn = e.currentTarget;
+    btn.disabled = true; btn.textContent = 'Bezig…';
+    try {
+      await addEntry({ type: 'tekst', name, msg });
+      await renderGrid();
+      closeModal();
+    } catch (err) {
+      alert('Versturen mislukt, probeer opnieuw.');
+      console.error(err);
+    } finally {
+      btn.disabled = false; btn.textContent = 'Toevoegen ✓';
+    }
   });
 
   /* ══════════════════════════════════════════
