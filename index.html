@@ -2,7 +2,7 @@
 <html lang="nl">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>Gelukkige Verjaardag Saartje! 🎉</title>
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=Poppins:wght@300;400;600&display=swap');
@@ -393,7 +393,7 @@
 
     /* ── ADD BUTTON ── */
     .add-btn {
-      position: fixed; bottom: 2rem; right: 2rem; z-index: 100;
+      position: fixed; bottom: calc(2rem + env(safe-area-inset-bottom, 0px)); right: 2rem; z-index: 100;
       width: 62px; height: 62px; border-radius: 50%;
       background: var(--green); border: none; cursor: pointer;
       font-size: 1.8rem; color: var(--white);
@@ -524,7 +524,7 @@
 
     /* ── MUSIC BUTTON ── */
     .music-btn {
-      position: fixed; bottom: 2rem; left: 2rem; z-index: 100;
+      position: fixed; bottom: calc(2rem + env(safe-area-inset-bottom, 0px)); left: 2rem; z-index: 100;
       width: 54px; height: 54px; border-radius: 50%;
       background: rgba(22,163,74,.25); border: 1px solid rgba(74,222,128,.4);
       cursor: pointer; font-size: 1.4rem; color: var(--white);
